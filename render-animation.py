@@ -9,9 +9,14 @@ import subprocess
 import cairo
 import tqdm
 import numpy as np
-from scipy.ndimage import gaussian_filter
 
 from parser import parse
+
+import scene.circle
+import scene.loop_p
+import scene.square
+import scene.hcomp
+import scene.cube
 
 import tinycss2
 import tinycss2.color3
@@ -100,7 +105,7 @@ for s in tqdm.tqdm(sorted(stamps)):
         count = count + len(line)
 
 ################################################################            
-SCALE = 6
+SCALE = 1
 imagesize = (1920//SCALE,1080//SCALE)
 
 WIDTH = imagesize[0]
@@ -112,7 +117,7 @@ current_row = math.nan
 
 def render(surface, cr, frame, s, t, text, html, df):
     dpi = (400 / 72) * WIDTH / 1920
-    
+
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.5) # transparent black
     cr.rectangle(0, 0, imagesize[0], imagesize[1])
     cr.set_operator(cairo.Operator.SOURCE)
@@ -208,7 +213,7 @@ def render(surface, cr, frame, s, t, text, html, df):
             blocks = parsed[r]
             c = margin 
             for block in blocks:
-                kinds, text = block
+                kinds, txt = block
 
                 cr.set_source_rgba(1, 1, 1, 0.5) # gray
 
@@ -218,10 +223,29 @@ def render(surface, cr, frame, s, t, text, html, df):
                         cr.set_operator(cairo.Operator.OVER)
 
                 cr.move_to(c,HEIGHT - bottom_margin + (r - current_row + 1) * lineheight)
-                cr.show_text(text)
-                extents = cr.text_extents(text)
+                cr.show_text(txt)
+                extents = cr.text_extents(txt)
                 c = c + extents.x_advance 
 
+    # renderers
+    current_line = ''
+    if rows[s] - 1 < len(text):
+        current_line = text[rows[s]-1]
+
+    before = current_line[:columns[s]]
+    before = before.split(' ')[-1]
+
+    after = current_line[columns[s]:]
+    after = after.split(' ')[0]
+
+    word = before + after
+    
+    scene.circle.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word)
+    scene.loop_p.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word, 'p', 1)
+    scene.loop_p.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word, 'q', -1)
+    scene.square.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word, text, rows[s], columns[s])
+    scene.hcomp.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word, text, rows[s], columns[s])
+    scene.cube.render(cr, WIDTH, HEIGHT, frame * 1000 / fps, current_line, word, text, rows[s], columns[s])
             
 loaded_html = 0
 loaded_text = 0
@@ -241,12 +265,12 @@ command = [ FFMPEG_BIN,
         '-f', 'rawvideo',
         '-vcodec','rawvideo',
         '-s', ('%dx%d' % imagesize), # size of one frame
-        '-pix_fmt', 'bgra',
+        '-pix_fmt', 'rgb32',
         '-r', str(fps), # frames per secon
         '-i', '-', # The imput comes from a pipe
         '-an', # Tells FFMPEG not to expect any audio
         '-vcodec', 'libvpx-vp9',
-        '-pix_fmt','yuva420p',
+        #'-pix_fmt','yuva420p',
         '-crf','18',
         'rendered.webm' ]
 
@@ -258,10 +282,11 @@ def clean(x):
      return x
 
 print("Rendering frames...")
-subset = 1000 
-#for frame in tqdm.tqdm(range(subset,duration)):
-for frame in tqdm.tqdm(range(subset,subset+300)):
-#for frame in tqdm.tqdm(range(duration)):
+subset = 15000 
+subset = 0
+# still need to do 6000-8000
+
+for frame in tqdm.tqdm(range(subset)):
     t = start + frame * 1000 / fps
     s = max([s for s in stamps if s <= t])
 
@@ -283,7 +308,32 @@ for frame in tqdm.tqdm(range(subset,subset+300)):
             f.close()
             loaded_text = s        
 
-    surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, *imagesize)
+#for frame in tqdm.tqdm(range(subset,duration)):
+#for frame in tqdm.tqdm(range(subset,subset+100)):
+#for frame in tqdm.tqdm(range(duration)):
+for frame in tqdm.tqdm(range(fps*19*60)):
+    t = start + frame * 1000 / fps
+    s = max([s for s in stamps if s <= t])
+
+    if loaded_html != s:
+        infile = "board{:d}.html".format(s)
+        if os.path.isfile(infile):
+            f = open(infile, "r")
+            unsolved = ' <a id="23" class="Pragma">--allow-unsolved-metas</a>'
+            html = [clean(x.rstrip("\n").replace(unsolved,'')) for x in f.readlines()]
+            html = "\n".join(html)
+            f.close()
+            loaded_html = s        
+
+    if loaded_text != s:
+        infile = "board{:d}.agda".format(s)
+        if os.path.isfile(infile):
+            f = open(infile, "r")
+            text = [x.rstrip("\n") for x in f.readlines()]
+            f.close()
+            loaded_text = s        
+
+    surface = cairo.ImageSurface(cairo.FORMAT_RGB24, *imagesize)
     cr = cairo.Context(surface)
     df = 1.0 / fps
     if loaded_html == loaded_text:
@@ -298,19 +348,7 @@ for frame in tqdm.tqdm(range(subset,subset+300)):
     cr.show_text('%05d'%(frame))
         
     buf = surface.get_data()
-    width = imagesize[0]
-    height = imagesize[1]
-
-    data = np.ndarray(shape=(height, width, 4),
-                     dtype=np.uint8,
-                     buffer=buf)
-
-    #data = data.transpose( (2, 0, 1) )
-    #data[3,::,::] = gaussian_filter(data[3,::,::], sigma=3)
-    #data[3,::,::] = gaussian_filter(data[3,::,::], sigma=3)
-    #data = data.transpose( (1, 2, 0) )
-    #ffmpeg.stdin.write( surface.get_data() )
-    ffmpeg.stdin.write( data )
+    ffmpeg.stdin.write( buf )
 
 ffmpeg.stdin.close()
 ffmpeg.wait()
